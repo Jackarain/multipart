@@ -25,7 +25,8 @@ set(MULTIPART_TESTS
     test_lazy
     test_events
     test_helpers
-    test_iterators)
+    test_iterators
+    test_expected_boundary)
 
 foreach(test_name IN LISTS MULTIPART_TESTS)
     add_executable(${test_name} ${test_name}.cpp)

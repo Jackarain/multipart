@@ -12,7 +12,9 @@
 ## 特性
 
 - **解析** `multipart/form-data`、`multipart/mixed`、`multipart/related` 等文档，
-  无需 `Content-Type` 头——boundary 直接从请求体中识别。
+  无需 `Content-Type` 头——boundary 直接从请求体中识别。也可传入期望的
+  boundary（来自 `Content-Type`）跳过启发式识别，正确处理空文档及含 `--`
+  的 preamble。
 - **序列化** 文档为字节流（字节级精确的往返）。
 - **零拷贝** 解码：通过 `lazy_part`（`std::string_view` 切片直接指向原始缓冲区）。
 - **流式事件**（`event_cb`），适合内存敏感地处理超大载荷。

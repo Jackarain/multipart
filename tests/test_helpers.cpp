@@ -55,6 +55,31 @@ TEST(helpers, make_content_type_round_trips_with_boundary)
     EXPECT_EQ(b.substr(2), extract_boundary(ct));
 }
 
+TEST(helpers, make_content_type_quotes_special_boundaries)
+{
+    // Space is a valid bchar but not a token char -> must be quoted.
+    EXPECT_EQ("multipart/form-data; boundary=\"a b\"",
+              make_content_type("a b"));
+    // ';' is not a boundary char at all -> quoted (and parseable again).
+    std::string quoted = make_content_type("x;y");
+    EXPECT_EQ("multipart/form-data; boundary=\"x;y\"", quoted);
+    // Quotes and backslashes are escaped inside the quoted-string.
+    EXPECT_EQ("multipart/form-data; boundary=\"q\\\"q\"",
+              make_content_type("q\"q"));
+    EXPECT_EQ("multipart/form-data; boundary=\"a\\\\b\"",
+              make_content_type("a\\b"));
+    // Safe token chars stay unquoted.
+    EXPECT_EQ("multipart/form-data; boundary=abc123", make_content_type("abc123"));
+    EXPECT_EQ("multipart/form-data; boundary=a(b)c", make_content_type("a(b)c"));
+}
+
+TEST(helpers, quoted_content_type_still_extracts)
+{
+    std::string ct = make_content_type("a b");
+    EXPECT_EQ("a b", extract_boundary(ct));
+    EXPECT_TRUE(is_multipart(ct));
+}
+
 TEST(helpers, is_multipart)
 {
     EXPECT_TRUE(is_multipart("multipart/form-data; boundary=abc"));
@@ -84,6 +109,21 @@ TEST(helpers, extract_boundary_does_not_match_prefix)
     // "Xboundary=" must not be mistaken for "boundary=".
     EXPECT_EQ("", extract_boundary(
                       "multipart/mixed; xboundary=should-not-match"));
+}
+
+TEST(helpers, ifind_guards_against_oversized_pos)
+{
+    using multipart::detail::ifind;
+    constexpr auto npos = std::string_view::npos;
+
+    std::string_view hay("abc");
+    EXPECT_EQ(npos, ifind(hay, "c", 5));                      // pos > size
+    EXPECT_EQ(npos, ifind(hay, "c", npos));                   // pos == SIZE_MAX
+    EXPECT_EQ(0u, ifind(hay, "a", 0));
+    EXPECT_EQ(2u, ifind(hay, "c", 2));
+    EXPECT_EQ(2u, ifind(hay, "C", 0));                        // case-insensitive
+    EXPECT_EQ(npos, ifind(hay, "abcd", 0));                   // needle > hay
+    EXPECT_EQ(npos, ifind(hay, "z", 0));
 }
 
 TEST(helpers, make_field)

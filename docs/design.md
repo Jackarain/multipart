@@ -47,7 +47,11 @@ bridge the two forms:
 
 `decode` is a single-pass, character-oriented state machine
 (`detail::decode_recursive`). It does **not** need the `Content-Type` header:
-it discovers the boundary from the first `--...\r\n` line of the body.
+by default it discovers the boundary from the first `--...\r\n` line of the
+body. When an **expected boundary** is supplied, that heuristic is skipped —
+the parser locates the exact delimiter (tolerating a preamble that contains
+`--` sequences) and can recognize an empty document via the immediate
+close-delimiter `--boundary--`.
 
 States:
 
@@ -123,13 +127,21 @@ accepts — verified by the round-trip tests and the property-based random test.
 
 - Input iterators must be **random access** (the parser does random lookahead).
   Streams must be buffered first.
-- The boundary is discovered from the body, not from `Content-Type`. A
-  malformed body that contains an accidental leading `--...\r\n` line is
-  treated as the boundary and will likely fail to parse (reported as an error).
+- Without an expected boundary, the boundary is discovered from the body. A
+  preamble that itself contains a `--...\r\n` line can be mistaken for the
+  boundary; pass the expected boundary (from `Content-Type`) to `decode()`
+  to eliminate this ambiguity. An **empty** document (`--b--\r\n`) is only
+  recognized when the expected boundary is known — otherwise `--b--` is
+  ambiguous (a boundary named `b--` is legal).
 - Header **folding** (obs-fold continuation lines, RFC 7230) is not supported;
   a continuation line is treated as the start of a new header.
-- `multipart` documents with **zero** parts (bare `--b--\r\n`) are rejected.
+- The discovered boundary is capped at 200 bytes (`max_boundary_length`);
+  longer boundary lines are rejected to bound allocation.
 - Encoded output always uses `\r\n` line endings.
 - Nested depth is capped at 64.
+- A nested `list_t` child carries its **own** (inner) boundary; the encoder
+  assumes the child's boundary differs from the parent's. When constructing
+  nested documents by hand, set each level's boundary accordingly (see
+  `test_nested.cpp`).
 - The `part_data_` event callback receives a view into a temporary during the
   owning `decode()`; it must not be retained beyond the callback.

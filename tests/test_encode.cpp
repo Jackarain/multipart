@@ -76,8 +76,17 @@ TEST(encode, bare_content_root_without_boundary)
     part p;
     p.content() = "data";
     p.add_header("X-A", "1");
-    // No boundary -> bare part, headers then content.
-    EXPECT_EQ("X-A: 1\r\n\r\ndata\r\n", encode(p));
+    // No boundary -> bare part, headers then content, and no trailing CRLF
+    // (the CRLF belongs to a boundary delimiter, which does not exist here).
+    EXPECT_EQ("X-A: 1\r\n\r\ndata", encode(p));
+}
+
+TEST(encode, empty_list_without_boundary_produces_nothing)
+{
+    // A list with no boundary and no children must not emit "--\r\n".
+    part p;
+    p.list();
+    EXPECT_EQ("", encode(p));
 }
 
 TEST(encode, to_string_and_back_inserter_agree)

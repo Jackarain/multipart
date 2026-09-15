@@ -120,12 +120,18 @@ inline std::size_t ifind(std::string_view haystack, std::string_view needle,
     static const std::size_t npos = std::string_view::npos;
     if (needle.empty()) return pos <= haystack.size() ? pos : npos;
     if (needle.size() > haystack.size()) return npos;
-    for (; pos + needle.size() <= haystack.size(); ++pos) {
+    if (pos > haystack.size()) return npos;   // 防御：避免 substr 越界
+    const std::size_t limit = haystack.size() - needle.size();
+    for (; pos <= limit; ++pos) {
         if (iequals(haystack.substr(pos, needle.size()), needle))
             return pos;
     }
     return npos;
 }
+
+// 前向声明：把用户传入的期望 boundary 归一化为候选分隔符
+inline void init_expected(std::string_view in, std::string& out,
+                          std::string& out_alt);
 
 } // namespace detail
 
@@ -466,6 +472,7 @@ enum {
 
 enum {
     max_recursive_depth = 64,
+    max_boundary_length = 200,
 };
 
 // 检测 Content-Type 是否为 multipart/*，并提取 boundary 参数
@@ -522,7 +529,9 @@ inline bool extract_multipart_boundary(std::string_view value,
 
 template <typename InIt, typename Entry>
 std::ptrdiff_t decode_recursive(InIt in, InIt end, Entry& ret,
-                                bool& err, int depth, const event_cb& ecb)
+                                bool& err, int depth, const event_cb& ecb,
+                                const std::string* expected = nullptr,
+                                const std::string* expected_alt = nullptr)
 {
     if (depth >= max_recursive_depth || in == end) {
         err = true;
@@ -549,7 +558,56 @@ std::ptrdiff_t decode_recursive(InIt in, InIt end, Entry& ret,
         switch (state)
         {
         case s_start:
-            // 跳过 preamble（第一个 boundary 之前的任意文本，RFC 2046）
+            if (expected) {
+                // 已知期望 boundary：直接在输入中定位它（跳过 preamble），
+                // 避免把 preamble 中的 "--" 误当成边界，也能识别紧跟其后的
+                // 关闭分隔符（空文档）。
+                // expected 为 token 形式（"--boundary"），expected_alt 为用户
+                // 直接传入 delimiter 形式时兜底。
+                if (c == '-') {
+                    InIt here = in - 1;
+                    const std::string* cands[2] = { expected, expected_alt };
+                    for (int ci = 0; ci < 2 && cands[ci]; ++ci) {
+                        const std::string& bd = *cands[ci];
+                        auto remaining = std::distance(here, end);
+                        if (remaining < static_cast<std::ptrdiff_t>(
+                                             bd.size() + 2))
+                            continue; // 剩余空间不足，换下一个候选
+                        const char* hp = std::addressof(*here);
+                        if (!region_equal(hp, bd.size(), bd))
+                            continue; // 不是这个候选，继续
+                        boundary = bd;
+                        if (hp[bd.size()] == '-' && hp[bd.size() + 1] == '-') {
+                            // 关闭分隔符紧跟其后：空 multipart 文档
+                            if (ret.type() != data_type::list_t)
+                                ret = Entry(data_type::list_t);
+                            if (ret.boundary().empty())
+                                ret.boundary() = boundary;
+                            if (ecb.boundary_)
+                                ecb.boundary_(boundary);
+                            in = here + bd.size() + 2;
+                            return std::distance(start, in);
+                        }
+                        if (hp[bd.size()] == '\r' &&
+                            hp[bd.size() + 1] == '\n') {
+                            // 正常开头
+                            in = here + bd.size() + 2;
+                            cbegin = cend = in;
+                            state = s_header_field;
+                            if (ecb.boundary_)
+                                ecb.boundary_(boundary);
+                            continue;
+                        }
+                        err = true;
+                        return in - start;
+                    }
+                    continue; // 未命中任何候选，跳过该字符继续扫描
+                }
+                continue;
+            }
+
+            // 无期望边界：跳过 preamble（第一个 boundary 之前的任意文本，
+            // RFC 2046），从 "--" 开始自行发现边界。
             if (c != '-') {
                 cbegin = cend = in;
                 continue;
@@ -575,6 +633,11 @@ std::ptrdiff_t decode_recursive(InIt in, InIt end, Entry& ret,
                         ecb.boundary_(boundary);
                     continue;
                 }
+            }
+            // 防止恶意输入用超长 boundary 造成无界内存分配
+            if (boundary.size() >= max_boundary_length) {
+                err = true;
+                return in - start;
             }
             boundary.push_back(c);
             continue;
@@ -646,24 +709,22 @@ std::ptrdiff_t decode_recursive(InIt in, InIt end, Entry& ret,
                 std::string nested_boundary;
                 if (extract_multipart_boundary(std::string_view(value),
                                                nested_boundary)) {
+                    // 用 Content-Type 声明的边界作为内层期望边界，
+                    // 内层文档即可正确处理空文档 / preamble。
+                    std::string nested_lib, nested_alt;
+                    init_expected(nested_boundary, nested_lib, nested_alt);
+
                     bool nested_err = false;
-                    auto consumed = decode_recursive(in, end, tmp, nested_err,
-                                                     depth + 1, ecb);
+                    auto consumed = decode_recursive(
+                        in, end, tmp, nested_err, depth + 1, ecb,
+                        &nested_lib,
+                        nested_alt.empty() ? nullptr : &nested_alt);
                     if (nested_err) { err = true; return in - start; }
 
                     // 嵌套 list 的 boundary 应为内层 boundary
-                    // （若 tmp 为 content_t，说明解析内部其实没找到子 part，
-                    //  退回 content 处理更安全）
-                    if (tmp.type() == data_type::list_t) {
-                        // extract_multipart_boundary 返回的是标准形式（不带
-                        // 前导 "--"），这里统一补全为库内部表示。
-                        if (nested_boundary.size() >= 2 &&
-                            nested_boundary[0] == '-' &&
-                            nested_boundary[1] == '-')
-                            tmp.boundary() = std::move(nested_boundary);
-                        else
-                            tmp.boundary() = "--" + std::move(nested_boundary);
-                    }
+                    if (tmp.type() == data_type::list_t &&
+                        tmp.boundary().empty())
+                        tmp.boundary() = nested_lib;
 
                     in += consumed;
                     cbegin = cend = in;
@@ -832,8 +893,9 @@ int encode_document(OutIt& out, const Entry& e, int depth)
         ret += write_headers(out, e.prototype());
         ret += write_string(out, "\r\n");
         ret += write_string(out, e.content());
-        ret += write_string(out, "\r\n");
+        // CRLF 属于分隔符前缀：仅在存在 boundary 时追加
         if (!b.empty()) {
+            ret += write_string(out, "\r\n");
             ret += write_string(out, b);
             ret += write_string(out, "--\r\n");
         }
@@ -845,8 +907,11 @@ int encode_document(OutIt& out, const Entry& e, int depth)
         // 因此这里不再额外输出一次开头的 boundary。
         for (const auto& child : e.list())
             ret += encode_part(out, child, b, depth + 1);
-        ret += write_string(out, b);
-        ret += write_string(out, "--\r\n");
+        // 无 boundary 时（如空 list 且子节点也无边界）不输出 "--\r\n"
+        if (!b.empty()) {
+            ret += write_string(out, b);
+            ret += write_string(out, "--\r\n");
+        }
         break;
 
     default:
@@ -899,19 +964,62 @@ int encode_part(OutIt& out, const Entry& e, const std::string& parent_boundary,
 // public API
 // ---------------------------------------------------------------------------
 
+namespace detail {
+
+// 共享的解码实现：expected 非空时按期望 boundary 解析。
+// 出错时 ok 置为 false，并返回已解析的部分结果（不含错误发生后的数据）。
 template <typename Entry, typename InIt>
-Entry decode(InIt start, InIt end, bool& ok, event_cb ecb = {})
+Entry decode_impl(InIt start, InIt end, const std::string* expected,
+                  const std::string* expected_alt, bool& ok, event_cb ecb)
 {
     Entry e;
     bool err = false;
-    detail::decode_recursive(start, end, e, err, 0, ecb);
+    detail::decode_recursive(start, end, e, err, 0, ecb, expected,
+                             expected_alt);
     ok = !err;
     if (err) {
         if (ecb.error_)
             ecb.error_("multipart: parse error");
-        return Entry{};
+        return e; // 保留已成功解析的部分
     }
     return e;
+}
+
+// 把用户传入的期望 boundary 归一化为候选分隔符。
+//  - out        ：token 形式（"--" + in），始终有效；
+//  - out_alt    ：当 in 以 "--" 开头时，原样作为 delimiter 形式兜底；
+//    （in 为空串时两者都为空，表示不提供期望边界。）
+inline void init_expected(std::string_view in, std::string& out,
+                          std::string& out_alt)
+{
+    out.clear();
+    out_alt.clear();
+    if (in.empty()) return;
+    out.reserve(in.size() + 2);
+    out.append("--");
+    out.append(in.data(), in.size());
+    if (in.size() >= 2 && in[0] == '-' && in[1] == '-')
+        out_alt.assign(in.data(), in.size());
+}
+
+} // namespace detail
+
+template <typename Entry, typename InIt>
+Entry decode(InIt start, InIt end, bool& ok, event_cb ecb = {})
+{
+    return detail::decode_impl<Entry>(start, end, nullptr, nullptr, ok,
+                                      std::move(ecb));
+}
+
+template <typename Entry, typename InIt>
+Entry decode(InIt start, InIt end, std::string_view expected_boundary,
+             bool& ok, event_cb ecb = {})
+{
+    std::string expected, expected_alt;
+    detail::init_expected(expected_boundary, expected, expected_alt);
+    return detail::decode_impl<Entry>(
+        start, end, expected.empty() ? nullptr : &expected,
+        expected_alt.empty() ? nullptr : &expected_alt, ok, std::move(ecb));
 }
 
 template <typename Entry, typename InIt>
@@ -919,6 +1027,14 @@ Entry decode(InIt start, InIt end, event_cb ecb = {})
 {
     bool ok;
     return decode<Entry>(start, end, ok, std::move(ecb));
+}
+
+template <typename Entry, typename InIt>
+Entry decode(InIt start, InIt end, std::string_view expected_boundary,
+             event_cb ecb = {})
+{
+    bool ok;
+    return decode<Entry>(start, end, expected_boundary, ok, std::move(ecb));
 }
 
 template <typename Entry, typename Container>
@@ -930,11 +1046,31 @@ Entry decode(const Container& c, bool& ok, event_cb ecb = {})
 }
 
 template <typename Entry, typename Container>
+Entry decode(const Container& c, std::string_view expected_boundary,
+             bool& ok, event_cb ecb = {})
+{
+    using std::begin;
+    using std::end;
+    return decode<Entry>(begin(c), end(c), expected_boundary, ok,
+                         std::move(ecb));
+}
+
+template <typename Entry, typename Container>
 Entry decode(const Container& c, event_cb ecb = {})
 {
     using std::begin;
     using std::end;
     return decode<Entry>(begin(c), end(c), std::move(ecb));
+}
+
+template <typename Entry, typename Container>
+Entry decode(const Container& c, std::string_view expected_boundary,
+             event_cb ecb = {})
+{
+    using std::begin;
+    using std::end;
+    return decode<Entry>(begin(c), end(c), expected_boundary,
+                         std::move(ecb));
 }
 
 template <class OutIt, class Entry>
@@ -960,10 +1096,28 @@ inline part decode(std::string_view data, bool& ok, event_cb ecb = {})
     return decode<part>(data.begin(), data.end(), ok, std::move(ecb));
 }
 
+inline part decode(std::string_view data, std::string_view expected_boundary,
+                   bool& ok, event_cb ecb = {})
+{
+    std::string expected, expected_alt;
+    detail::init_expected(expected_boundary, expected, expected_alt);
+    return detail::decode_impl<part>(
+        data.begin(), data.end(),
+        expected.empty() ? nullptr : &expected,
+        expected_alt.empty() ? nullptr : &expected_alt, ok, std::move(ecb));
+}
+
 inline part decode(std::string_view data, event_cb ecb = {})
 {
     bool ok;
     return decode<part>(data, ok, std::move(ecb));
+}
+
+inline part decode(std::string_view data, std::string_view expected_boundary,
+                   event_cb ecb = {})
+{
+    bool ok;
+    return decode(data, expected_boundary, ok, std::move(ecb));
 }
 
 inline lazy_part decode_lazy(std::string_view data, bool& ok, event_cb ecb = {})
@@ -971,10 +1125,30 @@ inline lazy_part decode_lazy(std::string_view data, bool& ok, event_cb ecb = {})
     return decode<lazy_part>(data.begin(), data.end(), ok, std::move(ecb));
 }
 
+inline lazy_part decode_lazy(std::string_view data,
+                             std::string_view expected_boundary,
+                             bool& ok, event_cb ecb = {})
+{
+    std::string expected, expected_alt;
+    detail::init_expected(expected_boundary, expected, expected_alt);
+    return detail::decode_impl<lazy_part>(
+        data.begin(), data.end(),
+        expected.empty() ? nullptr : &expected,
+        expected_alt.empty() ? nullptr : &expected_alt, ok, std::move(ecb));
+}
+
 inline lazy_part decode_lazy(std::string_view data, event_cb ecb = {})
 {
     bool ok;
     return decode<lazy_part>(data, ok, std::move(ecb));
+}
+
+inline lazy_part decode_lazy(std::string_view data,
+                             std::string_view expected_boundary,
+                             event_cb ecb = {})
+{
+    bool ok;
+    return decode_lazy(data, expected_boundary, ok, std::move(ecb));
 }
 
 // ---- 辅助工具 -------------------------------------------------------------
@@ -1000,13 +1174,16 @@ inline std::string make_boundary()
     static const char hex_chars[] = "0123456789abcdef";
     std::string boundary = "------------------------------";
     boundary.reserve(boundary.size() + 16);
+    // 一次 rng() 产生 64 位，取低 16 个半字节即可（避免 16 次调用）
+    const std::uint64_t v = rng();
     for (int i = 0; i < 16; ++i)
-        boundary += hex_chars[(rng() >> (i * 4)) & 0x0f];
+        boundary += hex_chars[(v >> (i * 4)) & 0x0f];
     return boundary;
 }
 
 // 根据 boundary 生成 "Content-Type: multipart/<subtype>; boundary=..."。
 // boundary 可以带前导 "--"（库内部表示），会自动剥离为标准形式。
+// 若 boundary 含 token 字符集以外的字符，则按 RFC 2046 用引号包裹。
 inline std::string make_content_type(std::string_view boundary,
                                      std::string_view subtype = "form-data")
 {
@@ -1015,7 +1192,32 @@ inline std::string make_content_type(std::string_view boundary,
     result.append("; boundary=");
     if (boundary.size() >= 2 && boundary[0] == '-' && boundary[1] == '-')
         boundary.remove_prefix(2);
-    result.append(boundary.data(), boundary.size());
+
+    // boundary 是否需要在 Content-Type 里加引号。
+    // 只有 RFC 2046 的 bcharsnospace（可进入 token）才可裸写；
+    // 空格、引号、反斜杠及其它特殊字符都需要引号包裹。
+    auto needs_quote = [](std::string_view s) {
+        for (char c : s) {
+            bool bchar =
+                std::isalnum(static_cast<unsigned char>(c)) ||
+                c == '\'' || c == '(' || c == ')' || c == '+' ||
+                c == '_' || c == ',' || c == '-' || c == '.' ||
+                c == '/' || c == ':' || c == '=' || c == '?';
+            if (!bchar || c == '"' || c == '\\') return true;
+        }
+        return false;
+    };
+
+    if (needs_quote(boundary)) {
+        result += '"';
+        for (char c : boundary) {
+            if (c == '"' || c == '\\') result += '\\';
+            result += c;
+        }
+        result += '"';
+    } else {
+        result.append(boundary.data(), boundary.size());
+    }
     return result;
 }
 

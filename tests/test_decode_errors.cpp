@@ -90,6 +90,58 @@ TEST(decode_errors, ok_flag_not_set_on_error)
     EXPECT_FALSE(p.is_content());
 }
 
+TEST(decode_errors, partial_results_are_returned_on_error)
+{
+    // Parts completed *before* the malformed tail are preserved.
+    bool ok = true;
+    part p = decode("--b\r\n\r\npart1\r\n--b\r\n\r\npart2", ok);
+    EXPECT_FALSE(ok);
+    ASSERT_TRUE(p.is_list());
+    ASSERT_EQ(1u, p.list().size()); // part1 finished, part2 was truncated
+    EXPECT_EQ("part1", p.list().front().content());
+}
+
+TEST(decode_errors, partial_results_events_and_error_callback)
+{
+    std::vector<std::string> data_events;
+    int errors = 0;
+    event_cb ecb;
+    ecb.part_data_ = [&](std::string_view d) {
+        data_events.push_back(std::string(d));
+        return 0;
+    };
+    ecb.error_ = [&](std::string_view) {
+        ++errors;
+        return 0;
+    };
+
+    bool ok = true;
+    part p = decode("--b\r\n\r\none\r\n--b\r\n\r\n", ok, ecb);
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(1, errors);
+    ASSERT_EQ(1u, data_events.size());
+    EXPECT_EQ("one", data_events[0]);
+    ASSERT_TRUE(p.is_list());
+    ASSERT_EQ(1u, p.list().size());
+}
+
+TEST(decode_errors, oversized_boundary_line_rejected)
+{
+    // Discovery must cap the boundary length to avoid unbounded allocation.
+    std::string body =
+        "--" + std::string(500, 'x') + "\r\n\r\n"
+        "data\r\n"
+        "--" + std::string(500, 'x') + "--\r\n";
+    EXPECT_TRUE(decode_fails(body));
+}
+
+TEST(decode_errors, normal_boundary_not_affected_by_cap)
+{
+    EXPECT_FALSE(decode_fails(
+        "--" + std::string(70, 'x') + "\r\n\r\nd\r\n--" +
+        std::string(70, 'x') + "--\r\n"));
+}
+
 TEST(decode_errors, valid_input_sets_ok)
 {
     bool ok = false;

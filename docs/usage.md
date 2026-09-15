@@ -114,19 +114,42 @@ Entry decode(InIt start, InIt end, bool& ok, event_cb ecb = {});
 template <typename Entry, typename InIt>
 Entry decode(InIt start, InIt end, event_cb ecb = {});
 
+// Same, but with an explicit expected boundary (recommended when the
+// Content-Type header is available).
+template <typename Entry, typename InIt>
+Entry decode(InIt start, InIt end, std::string_view expected_boundary,
+             bool& ok, event_cb ecb = {});
+template <typename Entry, typename InIt>
+Entry decode(InIt start, InIt end, std::string_view expected_boundary,
+             event_cb ecb = {});
+
 // Container overloads (anything with begin()/end()).
 template <typename Entry, typename Container>
 Entry decode(const Container& c, bool& ok, event_cb ecb = {});
 template <typename Entry, typename Container>
+Entry decode(const Container& c, std::string_view expected_boundary,
+             bool& ok, event_cb ecb = {});
+template <typename Entry, typename Container>
 Entry decode(const Container& c, event_cb ecb = {});
+template <typename Entry, typename Container>
+Entry decode(const Container& c, std::string_view expected_boundary,
+             event_cb ecb = {});
 
 // Convenience overloads for std::string_view.
 part decode(std::string_view data, bool& ok, event_cb ecb = {});
+part decode(std::string_view data, std::string_view expected_boundary,
+            bool& ok, event_cb ecb = {});
 part decode(std::string_view data, event_cb ecb = {});
+part decode(std::string_view data, std::string_view expected_boundary,
+            event_cb ecb = {});
 
 // Zero-copy variant: Entry == lazy_part.
 lazy_part decode_lazy(std::string_view data, bool& ok, event_cb ecb = {});
+lazy_part decode_lazy(std::string_view data, std::string_view expected_boundary,
+                      bool& ok, event_cb ecb = {});
 lazy_part decode_lazy(std::string_view data, event_cb ecb = {});
+lazy_part decode_lazy(std::string_view data, std::string_view expected_boundary,
+                      event_cb ecb = {});
 ```
 
 Notes:
@@ -135,13 +158,20 @@ Notes:
   (the parser performs random lookahead). `std::string`, `std::string_view`,
   `std::vector<char>`, `std::deque<char>`, and raw pointers all qualify.
   Buffered input from a stream first if you use `istreambuf_iterator`.
-- **`ok`**: reports whether the body parsed successfully. Malformed input
-  yields an **empty** result and `ok == false` — it never throws.
+- **`ok`**: reports whether the body parsed successfully. On failure it
+  returns the **partially parsed** tree (parts completed before the error)
+  and `ok == false` — it never throws. Use the `bool&` overload (or
+  `event_cb::error_`) to distinguish success from failure.
+- **Expected boundary**: pass the value from `extract_boundary()` (or
+  `make_content_type()`) to decode *exactly* and skip the body-discovery
+  heuristic. This correctly handles documents whose preamble contains `--`
+  sequences and **empty documents** (`--b--\r\n` with zero parts). Both the
+  token form (`"b"`) and the library-internal form (`"--b"`) are accepted.
 - **Result shape**: a successfully parsed document is always a `list_t`
-  (even a single-part body). RFC 2046 requires at least one part, so a bare
-  closing delimiter (`--b--\r\n`) is rejected.
+  (even a single-part body).
 - **Nesting**: a part whose `Content-Type` is `multipart/*` (case-insensitive
-  match, boundary extracted from the header value) becomes a `list_t` child.
+  match, boundary extracted from the header value) becomes a `list_t` child;
+  the declared inner boundary is used to parse it.
 
 ---
 
@@ -209,14 +239,18 @@ The `boundary_` callback fires once per (nested) document, not per part.
 // Random boundary in the library's internal form (leading "--"):
 std::string make_boundary();
 
-// "multipart/form-data; boundary=<b>" (strips the leading "--" if present):
+// "multipart/form-data; boundary=<b>" (strips the leading "--" if present).
+// Boundaries containing characters outside RFC 2046 bcharsnospace are quoted
+// (and " / \ are escaped) per RFC 2046 quoted-string:
 std::string make_content_type(std::string_view boundary,
                               std::string_view subtype = "form-data");
 
 // Does the Content-Type describe a multipart/* document?
 bool is_multipart(std::string_view content_type);
 
-// Extract the "boundary=" parameter (RFC form, no leading "--"; "" if none):
+// Extract the "boundary=" parameter (RFC form, no leading "--"; "" if none).
+// Note: a quoted boundary is returned with the quotes removed but without
+// unescaping embedded quotes/backslashes:
 std::string extract_boundary(std::string_view content_type);
 
 // One-call form builders:
@@ -232,8 +266,8 @@ using namespace multipart;
 
 // Decode side: get the boundary from the HTTP Content-Type header.
 std::string boundary = extract_boundary(http_content_type); // e.g. "abc"
-part form = decode(body, ok);
-form.set_boundary(boundary);   // for re-encoding with the same boundary
+part form = decode(body, boundary, ok); // expected-boundary decode
+form.set_boundary(boundary);            // for re-encoding with the same boundary
 
 // Encode side: fresh random boundary.
 const std::string b = make_boundary();
