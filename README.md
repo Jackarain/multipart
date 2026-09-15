@@ -1,44 +1,38 @@
 # multipart
 
-A small, self-contained, header-only **C++17** library for parsing and
-serializing MIME `multipart/*` documents (most notably
-`multipart/form-data`, used for HTML form submissions and file uploads).
+一个轻量、自包含、**header-only** 的 **C++17** 库，用于解析和序列化 MIME
+`multipart/*` 文档（最典型的是 `multipart/form-data`，用于 HTML 表单提交和文件上传）。
 
-It has **zero dependencies**, works with or without exceptions, and supports
-zero-copy (`std::string_view`-based) decoding.
+**零依赖**，支持或不支持异常均可使用，并支持零拷贝（基于 `std::string_view`）解码。
 
 ```cpp
 #include <multipart/multipart.hpp>
 ```
 
-## Features
+## 特性
 
-- **Parse** `multipart/form-data`, `multipart/mixed`, `multipart/related`, …
-  documents without needing the `Content-Type` header — the boundary is
-  discovered directly from the body.
-- **Serialize** documents back to bytes (byte-exact round-trips).
-- **Zero-copy** decoding via `lazy_part` (`std::string_view` slices that point
-  into the original buffer).
-- **Streaming events** (`event_cb`) for memory-friendly processing of large
-  payloads.
-- **Nested** multipart documents (a part whose body is itself `multipart/*`),
-  including multi-level nesting.
-- **Preamble / epilogue** tolerated per RFC 2046.
-- **Helpers**: random boundary generation, `Content-Type` construction,
-  boundary extraction, and one-call form-field/file part builders.
-- **No exceptions required**: the whole library compiles and works with
-  `-fno-exceptions` (see `tests/test_no_exceptions.cpp`).
-- C++17+, single header, no dependencies, no macros required.
+- **解析** `multipart/form-data`、`multipart/mixed`、`multipart/related` 等文档，
+  无需 `Content-Type` 头——boundary 直接从请求体中识别。
+- **序列化** 文档为字节流（字节级精确的往返）。
+- **零拷贝** 解码：通过 `lazy_part`（`std::string_view` 切片直接指向原始缓冲区）。
+- **流式事件**（`event_cb`），适合内存敏感地处理超大载荷。
+- **嵌套** multipart 文档（part 的正文本身是 `multipart/*`），支持多层嵌套。
+- 兼容 RFC 2046 的 **preamble / epilogue**。
+- **辅助工具**：随机 boundary 生成、`Content-Type` 构造、boundary 提取，
+  以及一行代码构造表单字段/文件 part。
+- **无需异常**：整个库在 `-fno-exceptions` 下也能编译运行
+  （见 `tests/test_no_exceptions.cpp`）。
+- C++17 及以上、单头文件、无依赖、无需定义任何宏。
 
-## Requirements
+## 环境要求
 
-- A C++17 (or newer) compiler. Tested with GCC, Clang (also under
-  ASan/UBSan). MSVC is expected to work (C++17 mode).
-- CMake ≥ 3.16 for the build system (the header itself has no build step).
+- 支持 C++17（或更高）的编译器。已在 GCC、Clang 上测试（含 ASan/UBSan）。
+  MSVC 预期可用（C++17 模式）。
+- 构建系统需要 CMake ≥ 3.16（头文件本身无需构建步骤）。
 
-## Integration
+## 集成方式
 
-### CMake (FetchContent)
+### CMake（FetchContent）
 
 ```cmake
 include(FetchContent)
@@ -50,7 +44,7 @@ FetchContent_MakeAvailable(multipart)
 target_link_libraries(my_app PRIVATE multipart::multipart)
 ```
 
-### CMake (find_package after install)
+### CMake（安装后通过 find_package 使用）
 
 ```bash
 cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
@@ -63,29 +57,28 @@ find_package(multipart REQUIRED)
 target_link_libraries(my_app PRIVATE multipart::multipart)
 ```
 
-### Plain copy
+### 直接拷贝
 
-Drop `include/multipart/multipart.hpp` into your project and add the include
-path:
+把 `include/multipart/multipart.hpp` 拷入你的项目，并添加 include 路径：
 
 ```bash
 c++ -std=c++17 -I/path/to/multipart/include my_app.cpp
 ```
 
-## Quick start
+## 快速上手
 
-### Decode a `multipart/form-data` body
+### 解析一个 `multipart/form-data` 请求体
 
 ```cpp
 #include <multipart/multipart.hpp>
 #include <iostream>
 
 int main() {
-    std::string body = "request body received over the network...";
+    std::string body = "通过网络收到的请求体...";
 
     bool ok = false;
     multipart::part form = multipart::decode(body, ok);
-    if (!ok) return 1;                        // malformed body
+    if (!ok) return 1;                        // 请求体格式非法
 
     std::cout << "boundary: " << form.boundary() << "\n";
     for (const auto& part : form.list()) {
@@ -95,7 +88,7 @@ int main() {
 }
 ```
 
-### Build a file-upload request
+### 构造文件上传请求
 
 ```cpp
 using namespace multipart;
@@ -115,28 +108,28 @@ form.list().push_back(std::move(field));
 form.list().push_back(std::move(file));
 
 std::string request_body = encode(form);
-std::string content_type = make_content_type(boundary); // for the HTTP header
+std::string content_type = make_content_type(boundary); // 用于 HTTP 头
 ```
 
-### Zero-copy decode
+### 零拷贝解码
 
 ```cpp
 std::string body = /* ... */;
 multipart::lazy_part doc = multipart::decode_lazy(body);
 
 std::string_view payload = doc.list().front().content();
-// payload points *into* body — no copy was made.
-// NOTE: body must outlive doc.
+// payload 直接指向 body 内部——没有任何拷贝。
+// 注意：body 必须比 doc 存活得更久。
 ```
 
-## Documentation
+## 文档
 
-- [README](README.md) — this page
-- [docs/usage.md](docs/usage.md) — API reference and examples
-- [docs/design.md](docs/design.md) — data model, memory semantics, nesting,
-  RFC notes and known limitations
+- [README.md](README.md) —— 本页
+- [docs/usage.md](docs/usage.md) —— API 参考与示例
+- [docs/design.md](docs/design.md) —— 数据模型、内存语义、嵌套、
+  RFC 说明与已知限制
 
-## Building the tests & examples
+## 构建测试与示例
 
 ```bash
 cmake -S . -B build
@@ -144,19 +137,19 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Options:
+可选选项：
 
-| Option                    | Default | Description                        |
-|---------------------------|---------|------------------------------------|
-| `MULTIPART_BUILD_TESTS`   | `ON`    | Build the GoogleTest test suite    |
-| `MULTIPART_BUILD_EXAMPLES`| `ON`    | Build the examples                 |
-| `MULTIPART_INSTALL`       | `ON`    | Install rules + CMake package      |
-| `MULTIPART_PEDANTIC`      | `ON`    | `-Wall -Wextra -Wpedantic` / `/W4` |
+| 选项                       | 默认  | 说明                                    |
+|----------------------------|-------|-----------------------------------------|
+| `MULTIPART_BUILD_TESTS`    | `ON`  | 构建 GoogleTest 测试套件                |
+| `MULTIPART_BUILD_EXAMPLES` | `ON`  | 构建示例                                |
+| `MULTIPART_INSTALL`        | `ON`  | 安装规则 + CMake 包配置                 |
+| `MULTIPART_PEDANTIC`       | `ON`  | `-Wall -Wextra -Wpedantic` / `/W4`      |
 
-The test suite is also verified under `-fno-exceptions -fno-rtti` and with
-AddressSanitizer + UndefinedBehaviorSanitizer.
+测试套件同时会在 `-fno-exceptions -fno-rtti` 以及
+AddressSanitizer + UndefinedBehaviorSanitizer 下验证通过。
 
 ## License
 
-Distributed under the MIT License. The original parser (c) 2021 Jack
-(<jack.wgm@gmail.com>); see [LICENSE](LICENSE).
+以 MIT 协议分发。原始解析器版权 (c) 2021 Jack
+(<jack.wgm@gmail.com>)；详见 [LICENSE](LICENSE)。
