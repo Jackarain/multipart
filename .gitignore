@@ -1,0 +1,12 @@
+build*/
+.cache/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.exe
+.vscode/
+.idea/
+.clangd/
+CMakeUserPresets.json

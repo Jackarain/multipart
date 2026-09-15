@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: multipart
+Description: A small, self-contained C++17 multipart parser and serializer
+Version: @PROJECT_VERSION@
+Requires:
+Libs:
+Cflags: -I${includedir} -std=c++17
