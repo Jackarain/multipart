@@ -1,6 +1,7 @@
 # multipart
 
-一个轻量、自包含、**header-only** 的 **C++17** 库，用于解析和序列化 MIME
+一个轻量级 **header-only** 的 **C++17** 用于解析和序列化 multipart 库。
+
 `multipart/*` 文档（最典型的是 `multipart/form-data`，用于 HTML 表单提交和文件上传）。
 
 **零依赖**，支持或不支持异常均可使用，并支持零拷贝（基于 `std::string_view`）解码。
